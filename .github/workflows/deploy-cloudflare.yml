@@ -26,7 +26,10 @@ jobs:
 
       - name: 安裝套件
         run: npm ci
-
+        
+      - name: 設定執行權限
+        run: chmod +x scripts/*.sh
+        
       - name: 建置、更新資料庫並部署
         run: node scripts/deploy-cloudflare.mjs
         env:
