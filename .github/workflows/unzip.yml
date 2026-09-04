@@ -1,0 +1,43 @@
+name: Auto Unzip
+
+on:
+  push:
+    paths:
+      - '*.zip' # 只有当有 .zip 文件被上传或更新时，才会触发这个自动化任务
+
+jobs:
+  unzip-file:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 允许自动化脚本将解压后的文件写回仓库
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unzip all zip files
+        run: |
+          # 寻找仓库根目录下的所有 zip 文件并解压
+          for file in *.zip; do
+            if [ -f "$file" ]; then
+              echo "正在解压 $file ..."
+              # unzip -o 表示覆盖同名文件，-d . 表示解压到当前目录
+              unzip -o "$file" -d .
+              # 解压后删除原始 zip 文件（如果你想保留，可以删掉下面这行）
+              rm "$file" 
+            fi
+          done
+
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@://github.com"
+          
+          git add .
+          # 检查是否有新文件需要提交，避免没有变化时报错
+          if git diff --staged --quiet; then
+            echo "没有发现新文件，跳过提交。"
+          else
+            git commit -m "🤖 自动解压完成"
+            git push
+          fi
