@@ -9,7 +9,10 @@
     lastSent = "",
     applying = false,
     polling = false,
-    hostStarted = false;
+    hostStarted = false,
+    dirty = false,
+    sending = false,
+    localMutation = 0;
   const originalRender = render;
   render = function () {
     originalRender();
@@ -33,9 +36,18 @@
       ),
     );
   async function send() {
-    if (!state || applying) return;
+    if (!state || applying || sending) return;
+    if (onlineSeat !== state.active) {
+      dirty = false;
+      return;
+    }
     const raw = JSON.stringify(pack());
-    if (raw === lastSent) return;
+    if (raw === lastSent) {
+      dirty = false;
+      return;
+    }
+    const marker = localMutation;
+    sending = true;
     try {
       const r = await fetch("/api/rooms", {
         method: "POST",
@@ -50,8 +62,14 @@
       if (r.ok) {
         revision = (await r.json()).revision;
         lastSent = raw;
+        if (marker === localMutation) dirty = false;
       }
-    } catch {}
+    } catch {
+      setTimeout(send, 1000);
+    } finally {
+      sending = false;
+      if (dirty && marker !== localMutation) setTimeout(send, 120);
+    }
   }
   function adopt(x) {
     applying = true;
@@ -89,7 +107,7 @@
     if (x.state) adopt(x);
   }
   async function pull() {
-    if (polling) return;
+    if (polling || dirty || sending) return;
     polling = true;
     try {
       const r = await fetch(`/api/rooms?code=${room}&token=${token}`, {
@@ -110,7 +128,15 @@
       polling = false;
     }
   }
-  document.addEventListener("click", () => setTimeout(send, 350), true);
+  document.addEventListener(
+    "click",
+    () => {
+      dirty = true;
+      localMutation++;
+      setTimeout(send, 120);
+    },
+    true,
+  );
   const oldNew = window.newGame;
   $("#newGame").onclick = () => {
     if (seat !== 0) return;
