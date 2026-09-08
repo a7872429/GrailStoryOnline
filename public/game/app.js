@@ -18,9 +18,15 @@ let state,
   choice,
   previewTimer,
   previewPinned = false,
+  previewIgnoreNextClick = false,
   modalContinue = null,
   playerChoiceCallback = null;
 let onlineSeat = null;
+let effectContinuations = [];
+let extraContinuation = null;
+function queueEffectContinuation(next) {
+  if (typeof next === "function") effectContinuations.push(next);
+}
 function viewerSeat() {
   return onlineSeat === 0 || onlineSeat === 1 ? onlineSeat : state.active;
 }
@@ -50,7 +56,7 @@ function effectBusy() {
     state.pendingExtra ||
     state.pendingBarrier ||
     state.pendingSaintRemoval ||
-    state.afterEffect
+    effectContinuations.length
   );
 }
 function setDie(owner, key, value, source = "效果") {
@@ -79,6 +85,8 @@ function resetCard(card, owner, source = "效果") {
   return true;
 }
 function newGame() {
+  effectContinuations = [];
+  extraContinuation = null;
   let deck = shuffle(
       D.cards.map((c) => ({
         ...c,
@@ -251,7 +259,7 @@ function render() {
     setTimeout(showPendingExhaust);
   } else if (state.pendingSaintRemoval) showSaintRemoval();
   else if (state.pendingBarrier) showBarrierChoice();
-  else if (state.afterEffect && !state.effectContinuationOpening) {
+  else if (effectContinuations.length && !state.effectContinuationOpening) {
     state.effectContinuationOpening = true;
     setTimeout(continueEffectFlow);
   } else if (state.pendingExtra) showExtraChoice();
@@ -377,7 +385,10 @@ function bindPreview(el) {
     previewTimer = setTimeout(
       () => {
         previewPinned = start?.touch || false;
-        if (start?.touch) el._previewDragged = true;
+        if (start?.touch) {
+          el._previewDragged = true;
+          previewIgnoreNextClick = true;
+        }
         preview(el);
         movePreview(e);
       },
@@ -538,7 +549,7 @@ function choosePlayerTarget(title, text, done) {
       }),
   );
 }
-function chooseCardThenPlayer(c, after) {
+function chooseCardThenPlayer(c, after, sourceName = "技能效果") {
   let pool = state.center.map((card, index) => ({
     card,
     index,
@@ -546,7 +557,7 @@ function chooseCardThenPlayer(c, after) {
   }));
   if (!pool.length) return warn("沒有可選牌卡", "中央區目前沒有牌卡。", after);
   openChoice({
-    title: `${c.name}：指定牌卡`,
+    title: `「${c.name}」－${sourceName}：指定牌卡`,
     text: "選擇中央區 1 張牌。",
     cards: pool,
     required: 1,
@@ -555,7 +566,7 @@ function chooseCardThenPlayer(c, after) {
       let pick = pool[[...picks][0]],
         card = state.center[pick.index];
       choosePlayerTarget(
-        c.name,
+        `「${c.name}」－${sourceName}`,
         "選擇這張牌要放入哪位玩家的自身區。",
         (owner) => {
           state.center.splice(pick.index, 1);
@@ -573,7 +584,7 @@ function chooseCardThenPlayer(c, after) {
     },
   });
 }
-function chooseResetTarget(c, after) {
+function chooseResetTarget(c, after, sourceName = "技能效果") {
   let pool = [];
   state.players.forEach((p, owner) =>
     p.field.forEach((card, index) => {
@@ -589,7 +600,7 @@ function chooseResetTarget(c, after) {
   if (!pool.length)
     return warn("沒有可重置角色", "雙方自身區目前沒有橫置角色。", after);
   openChoice({
-    title: `${c.name}：重置角色`,
+    title: `「${c.name}」－${sourceName}：重置角色`,
     text: "選擇 1 張橫置角色重置。",
     cards: pool,
     required: 1,
@@ -597,7 +608,7 @@ function chooseResetTarget(c, after) {
     confirm: (picks) => {
       let x = pool[[...picks][0]];
       let saintTriggered = x.card.id === 51;
-      if (saintTriggered && after) state.afterEffect = after;
+      if (saintTriggered && after) queueEffectContinuation(after);
       resetCard(x.card, x.owner, `「${c.name}」`);
       log(
         `「${c.name}」重置 ${state.players[x.owner].name} 的「${x.card.name}」。`,
@@ -694,7 +705,7 @@ function rollbackPayment(s, resetMain = false) {
   state.log = s.log;
   state.turnDidSomething = s.turnDidSomething;
   state.pendingExhaust = null;
-  state.afterEffect = null;
+  effectContinuations = [];
   if (resetMain) state.turnAction = null;
   render();
 }
@@ -794,7 +805,7 @@ function runEffectSequence(items, c, after) {
     let item = items.shift();
     if (!item) return after?.();
     log(`「${c.name}」觸發關鍵字【${item.name}】。`);
-    applyEffect(item.text, c, next);
+    applyEffect(item.text, c, next, item.name);
   };
   next();
 }
@@ -821,22 +832,32 @@ function put(effect) {
       queueDiscards([{ player: state.active, count: 1, reason: "巫女暴走" }]);
   }
   let keywords = keywordEffects(c, p),
-    top = state.deck.at(-1);
+    top = state.deck.at(-1),
+    topEffects = [];
   if (top && top.faction === c.faction) {
     state.discard.push(state.deck.pop());
-    keywords.push({ name: "同命格牌庫頂", text: "你選擇自己黑骰或白骰點數+1" });
+    topEffects.push({
+      name: "與牌庫頂牌同系",
+      text: "你選擇自己黑骰或白骰點數+1",
+    });
     log(`「${c.name}」與牌庫頂同為${c.faction}命格，牌庫頂移至棄牌區。`);
   }
-  let finish = () =>
-    effect
-      ? applyEffect(
-          c.entry.effect,
-          c,
-          () => c.entry.extraEffect && c.entry.extraCondition && offerExtra(c),
-        )
-      : null;
-  if (keywords.length) runEffectSequence(keywords, c, finish);
-  else finish();
+  let finishTop = () =>
+      topEffects.length ? runEffectSequence(topEffects, c) : null,
+    finishEntry = () =>
+      effect
+        ? applyEffect(
+            c.entry.effect,
+            c,
+            () =>
+              c.entry.extraEffect && c.entry.extraCondition
+                ? offerExtra(c, finishTop)
+                : finishTop(),
+            "進場效果",
+          )
+        : finishTop();
+  if (keywords.length) runEffectSequence(keywords, c, finishEntry);
+  else finishEntry();
   refill();
   render();
 }
@@ -960,7 +981,7 @@ function beginActivate() {
       c.exhausted = true;
       state.turnDidSomething = true;
       log(`${p.name} 啟動「${c.name}」。`);
-      applyEffect(c.activate.effect, c);
+      applyEffect(c.activate.effect, c, null, "啟動效果");
       refill();
       render();
     },
@@ -968,7 +989,7 @@ function beginActivate() {
     c,
   );
 }
-function applyEffect(s, c, after) {
+function applyEffect(s, c, after, sourceName = c.name) {
   let owner = state.active,
     p = state.players[owner],
     done = [],
@@ -981,62 +1002,124 @@ function applyEffect(s, c, after) {
     let key = leading[1] === "黑" ? "black" : "white",
       delta = (leading[2] === "+" ? 1 : -1) * +leading[3];
     setDie(owner, key, p[key] + delta, `「${c.name}」`);
-    log(`自動執行：${leading[1]}骰${leading[2]}${leading[3]}。`);
-    let next = () => applyEffect(leading[4], c, after);
+    log(
+      `「${c.name}」－${sourceName}：自動執行${leading[1]}骰${leading[2]}${leading[3]}。`,
+    );
+    let next = () => applyEffect(leading[4], c, after, sourceName);
     if (state.pendingBarrier) {
-      state.afterEffect = next;
+      queueEffectContinuation(next);
       return render();
     }
     render();
     return next();
   }
+  let allBlack = fixed.match(/所有黑骰(?:點數)?(?:變成|調整為)(\d+)/);
+  if (allBlack) {
+    state.players.forEach((player, target) =>
+      setDie(target, "black", +allBlack[1], `「${c.name}」－${sourceName}`),
+    );
+    log(
+      `「${c.name}」－${sourceName}：所有玩家黑骰點數調整為 ${allBlack[1]}。`,
+    );
+    render();
+    return applyEffect(
+      fixed.replace(allBlack[0], ""),
+      c,
+      after,
+      sourceName,
+    );
+  }
+  let discardCenter = fixed.match(
+    /(?:棄掉|棄置|移除)中央區(?:合計)?(\d+|[一二三四五])張?(?:角色|牌)/,
+  );
+  if (discardCenter) {
+    let requested = +discardCenter[1] || cn[discardCenter[1]],
+      required = Math.min(requested, state.center.length),
+      rest = fixed.replace(discardCenter[0], "");
+    if (!required)
+      return applyEffect(rest, c, after, sourceName);
+    let pool = state.center.map((card, index) => ({
+      card,
+      index,
+      zone: "中央區",
+    }));
+    return openChoice({
+      title: `「${c.name}」－${sourceName}`,
+      text: `從中央區選擇 ${required} 張牌棄置。`,
+      cards: pool,
+      required,
+      cancel: false,
+      confirm: (picks) => {
+        [...picks]
+          .sort((a, b) => b - a)
+          .forEach((i) => state.discard.push(...state.center.splice(i, 1)));
+        log(`「${c.name}」－${sourceName}：棄置中央區 ${required} 張牌。`);
+        refill();
+        render();
+        applyEffect(rest, c, after, sourceName);
+      },
+    });
+  }
   let move = fixed.match(/選擇中央區1張牌，?放入自身區或敵方自身區/);
   if (move)
-    return chooseCardThenPlayer(c, () =>
-      applyEffect(fixed.replace(move[0], ""), c, after),
+    return chooseCardThenPlayer(
+      c,
+      () => applyEffect(fixed.replace(move[0], ""), c, after, sourceName),
+      sourceName,
     );
   let reset = fixed.match(/(?:你)?選擇自身區或敵方自身區1個?角色重置/);
   if (reset)
-    return chooseResetTarget(c, () =>
-      applyEffect(fixed.replace(reset[0], ""), c, after),
+    return chooseResetTarget(
+      c,
+      () => applyEffect(fixed.replace(reset[0], ""), c, after, sourceName),
+      sourceName,
     );
   let playerDice = fixed.match(
     /你選擇你或敵方，?選擇的人黑骰(?:點數)?([+-]\d+)，?白骰(?:點數)?([+-]\d+)/,
   );
   if (playerDice)
-    return choosePlayerTarget(c.name, "選擇承受此效果的玩家。", (target) => {
-      for (let [key, value] of [
-        ["black", +playerDice[1]],
-        ["white", +playerDice[2]],
-      ])
-        setDie(
-          target,
-          key,
-          state.players[target][key] + value,
-          `「${c.name}」`,
+    return choosePlayerTarget(
+      `「${c.name}」－${sourceName}`,
+      "選擇承受此效果的玩家。",
+      (target) => {
+        for (let [key, value] of [
+          ["black", +playerDice[1]],
+          ["white", +playerDice[2]],
+        ])
+          setDie(
+            target,
+            key,
+            state.players[target][key] + value,
+            `「${c.name}」－${sourceName}`,
+          );
+        log(
+          `「${c.name}」－${sourceName}：指定 ${state.players[target].name}，黑骰${playerDice[1]}、白骰${playerDice[2]}。`,
         );
-      log(
-        `「${c.name}」指定 ${state.players[target].name}，黑骰${playerDice[1]}、白骰${playerDice[2]}。`,
-      );
-      render();
-      applyEffect(fixed.replace(playerDice[0], ""), c, after);
-    });
+        render();
+        applyEffect(fixed.replace(playerDice[0], ""), c, after, sourceName);
+      },
+    );
   let discardPlayer = fixed.match(
     /(?:你)?選擇你或敵方(?:玩家)?，?棄(\d+)張手牌(?:到中央區)?/,
   );
   if (discardPlayer)
     return choosePlayerTarget(
-      c.name,
+      `「${c.name}」－${sourceName}`,
       `選擇棄 ${discardPlayer[1]} 張手牌的玩家。`,
       (target) => {
         let tp = state.players[target],
           n = Math.min(+discardPlayer[1], tp.hand.length);
         if (!n) {
           render();
-          return applyEffect(fixed.replace(discardPlayer[0], ""), c, after);
+          return applyEffect(
+            fixed.replace(discardPlayer[0], ""),
+            c,
+            after,
+            sourceName,
+          );
         }
         openChoice({
-          title: `${tp.name}：選擇棄牌`,
+          title: `「${c.name}」－${sourceName}：${tp.name} 選擇棄牌`,
           text: `選擇 ${n} 張手牌棄到中央區。`,
           cards: tp.hand.map((card) => ({ card })),
           required: n,
@@ -1046,7 +1129,12 @@ function applyEffect(s, c, after) {
               .sort((a, b) => b - a)
               .forEach((i) => state.center.push(...tp.hand.splice(i, 1)));
             render();
-            applyEffect(fixed.replace(discardPlayer[0], ""), c, after);
+            applyEffect(
+              fixed.replace(discardPlayer[0], ""),
+              c,
+              after,
+              sourceName,
+            );
           },
         });
       },
@@ -1058,7 +1146,10 @@ function applyEffect(s, c, after) {
         : { type: "set", value: +v.match(/\d+/)[0], targets: t };
   if (xs) {
     xs.owner = owner;
-    state.pendingExhaust = { spec: xs, title: `「${c.name}」效果` };
+    state.pendingExhaust = {
+      spec: xs,
+      title: `「${c.name}」－${sourceName}`,
+    };
     fixed = fixed.replace(xs.clause, "");
   }
   let own = fixed.match(
@@ -1119,15 +1210,22 @@ function applyEffect(s, c, after) {
     done.push(`抽${d[1]}張牌`);
     fixed = fixed.replace(d[0], "");
   }
-  if (done.length) log(`自動執行：${done.join("、")}。`);
+  if (done.length)
+    log(`「${c.name}」－${sourceName}：自動執行${done.join("、")}。`);
   if (after && (xs || ops.length || state.pendingBarrier))
-    state.afterEffect = after;
+    queueEffectContinuation(after);
   if (ops.length) {
-    state.pendingDice = { card: c.name, ops, chosen: null, owner };
+    state.pendingDice = {
+      card: c.name,
+      sourceName,
+      ops,
+      chosen: null,
+      owner,
+    };
     log(`「${c.name}」等待${p.name}選擇骰子。`);
   } else if (!done.length && !xs && fixed.replace(/[，。、\s]/g, "").length)
     choosePlayerTarget(
-      `${c.name}：選擇目標`,
+      `${c.name}－${sourceName}：選擇目標`,
       `${fixed}｜請直接選擇效果目標，不需要再按確定。`,
       (target) => {
         log(`「${c.name}」選擇 ${state.players[target].name} 作為效果目標。`);
@@ -1146,12 +1244,12 @@ function continueEffectFlow() {
     state.pendingSaintRemoval
   )
     return render();
-  let next = state.afterEffect;
-  state.afterEffect = null;
+  let next = effectContinuations.shift();
   if (next) next();
 }
-function offerExtra(c) {
+function offerExtra(c, after = null) {
   state.pendingExtra = c;
+  extraContinuation = after;
   showExtraChoice();
 }
 function showExtraChoice() {
@@ -1166,6 +1264,9 @@ function extraSkip() {
   if (c) log(`「${c.name}」不發動追加效果。`);
   state.pendingExtra = null;
   render();
+  let next = extraContinuation;
+  extraContinuation = null;
+  next?.();
 }
 function extraPay() {
   let c = state.pendingExtra;
@@ -1184,7 +1285,9 @@ function extraPay() {
       log(
         `「${c.name}」支付／符合追加條件：${condition || "無"}，發動追加效果。`,
       );
-      applyEffect(c.entry.extraEffect, c);
+      let next = extraContinuation;
+      extraContinuation = null;
+      applyEffect(c.entry.extraEffect, c, next, "追加效果");
       render();
     },
     cancel,
@@ -1227,8 +1330,12 @@ function showDiceChoice() {
     sideButtons = needsSide
       ? `<div class="side-choice"><button data-side="${q.owner}" class="${q.side === q.owner ? "primary" : ""}">${diceSummary(q.owner, "我方")}</button><button data-side="${1 - q.owner}" class="${q.side === 1 - q.owner ? "primary" : ""}">${diceSummary(1 - q.owner, "對方")}</button></div>`
       : "";
+  let sourceText =
+    q.sourceName === "與牌庫頂牌同系"
+      ? "與牌庫頂牌同系，由玩家選擇一顆黑骰或白骰"
+      : `「${q.card}」－${q.sourceName || "技能效果"}：${target}`;
   $("#actions").innerHTML =
-    `<span class="mode-note">${target} ${label}</span>${sideButtons}<button id="confirmDie" class="primary" ${q.chosen ? "" : "disabled"}>確認執行</button>`;
+    `<span class="mode-note">${esc(sourceText)} ${label}</span>${sideButtons}<button id="confirmDie" class="primary" ${q.chosen ? "" : "disabled"}>確認執行</button>`;
   $$("[data-side]").forEach(
     (b) =>
       (b.onclick = () => {
@@ -1470,11 +1577,19 @@ function finish() {
   }
 }
 function end() {
-  if (effectBusy())
-    return warn(
-      "效果尚未結算完成",
-      "請先完成目前的選牌、橫置、在場效果或骰子選擇，完成後才能結束回合。",
-    );
+  if (effectBusy()) {
+    // 不顯示阻斷式警告，直接回到目前或下一個待結算效果。
+    if (
+      effectContinuations.length &&
+      !state.pendingDice &&
+      !state.pendingExhaust &&
+      !state.pendingBarrier &&
+      !state.pendingSaintRemoval
+    )
+      continueEffectFlow();
+    else render();
+    return;
+  }
   if (!state.turnDidSomething)
     return warn(
       "尚未完成主要行動",
@@ -1519,10 +1634,32 @@ $("#modalClose").onclick = () => {
   next?.();
 };
 $("#cardPreview").onclick = (e) => {
+  if (previewIgnoreNextClick) {
+    previewIgnoreNextClick = false;
+    return;
+  }
   e.preventDefault();
   e.stopPropagation();
   hidePreview();
 };
+document.addEventListener(
+  "click",
+  (e) => {
+    if (
+      !matchMedia("(hover: none)").matches ||
+      $("#cardPreview").classList.contains("hidden")
+    )
+      return;
+    if (previewIgnoreNextClick) {
+      previewIgnoreNextClick = false;
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    hidePreview();
+  },
+  true,
+);
 document.addEventListener("mousedown", (e) => {
   if (
     previewPinned &&
