@@ -1642,6 +1642,12 @@ $("#cardPreview").onclick = (e) => {
   e.stopPropagation();
   hidePreview();
 };
+$("#previewClose").onclick = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  previewIgnoreNextClick = false;
+  hidePreview();
+};
 document.addEventListener(
   "click",
   (e) => {
