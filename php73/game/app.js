@@ -28,7 +28,9 @@ function queueEffectContinuation(next) {
   if (typeof next === "function") effectContinuations.push(next);
 }
 function viewerSeat() {
-  return onlineSeat === 0 || onlineSeat === 1 ? onlineSeat : state.active;
+  return Number.isInteger(onlineSeat) && onlineSeat >= 0 && onlineSeat < state.players.length
+    ? onlineSeat
+    : state.active;
 }
 function shuffle(a) {
   for (let i = a.length - 1; i; i--) {
@@ -64,6 +66,8 @@ function setDie(owner, key, value, source = "效果") {
     old = p[key],
     next = Math.max(1, Math.min(6, value));
   p[key] = next;
+  if (old !== next)
+    log(`${source}：${p.name}${key === "black" ? "黑" : "白"}骰點數 ${old} → ${next}。`);
   if (key === "white" && next > old) {
     let barriers = p.field.filter((c) => c.id === 7).length;
     if (barriers) {
@@ -97,11 +101,12 @@ function newGame() {
       })),
     ),
     events = shuffle(D.events.map((e) => ({ ...e })));
+  let playerCount = window.onlinePlayerCount === 4 ? 4 : 2,
+    players = Array.from({ length: playerCount }, (_, i) =>
+      player($("#name" + (i + 1))?.value || `玩家${i + 1}`),
+    );
   state = {
-    players: [
-      player($("#name1").value || "玩家一"),
-      player($("#name2").value || "玩家二"),
-    ],
+    players,
     active: 0,
     deck,
     discard: [],
@@ -146,14 +151,17 @@ function activeView(p) {
   let i = viewerSeat();
   return `<div class="player-head"><h2>${esc(p.name)}</h2><div class="player-dice">${die(p.black, "black", i, "black")}${die(p.white, "white", i, "white")}</div><div class="score-badge">紀行 ${p.scores.length}/4</div></div><div class="zones"><div><div class="title">自身區 ${p.field.length}/5</div><div class="card-row">${p.field.map((c, i) => card(c, "field", i)).join("") || '<span class="empty">尚無角色</span>'}</div></div><div><div class="title">你的手牌 ${p.hand.length}/${handLimit(p)}</div><div class="card-row">${p.hand.map((c, i) => card(c, "hand", i)).join("") || '<span class="empty">手牌為空</span>'}</div></div><div class="score-zone"><div class="title">計分區 ${p.scores.length}/4</div><div class="card-row score-cards">${p.scores.map((c, i) => card(c, "score", i, false, true)).join("") || '<span class="empty">尚無計分牌</span>'}</div></div></div>`;
 }
-function opponentView(p) {
-  let i = 1 - viewerSeat();
-  return `<div class="opponent-head"><div class="opponent-identity"><span>敵方區</span><h2>${esc(p.name)}</h2></div><strong>紀行 ${p.scores.length}/4</strong></div><div class="title"><span>自身區 ${p.field.length}/5</span><span>手牌 ${p.hand.length}</span></div><div class="card-row opponent-field">${p.field.map((c, i) => card(c, "opp", i)).join("") || '<span class="empty">尚無角色</span>'}</div><div class="opponent-hand-line"><div class="card-row opponent-hand">${p.hand.map((c) => card(c, "", 0, true)).join("")}</div><div class="opponent-stats">${die(p.black, "black", i, "black")}${die(p.white, "white", i, "white")}</div></div>`;
+function teamLabel(i) {
+  if (state.players.length < 4) return i === viewerSeat() ? "我方" : "敵方";
+  return `${i % 2 === 0 ? "紅" : "藍"}${i < 2 ? 1 : 2}`;
+}
+function opponentView(p, i) {
+  return `<section class="opponent-seat team-${i % 2 ? "blue" : "red"}"><div class="opponent-head"><div class="opponent-identity"><span>${teamLabel(i)}</span><h2>${esc(p.name)}</h2></div><strong>紀行 ${p.scores.length}/4</strong></div><div class="title"><span>自身區 ${p.field.length}/5</span><span>手牌 ${p.hand.length}</span></div><div class="card-row opponent-field">${p.field.map((c, n) => card(c, "opp", n)).join("") || '<span class="empty">尚無角色</span>'}</div><div class="opponent-hand-line"><div class="card-row opponent-hand">${p.hand.map((c) => card(c, "", 0, true)).join("")}</div><div class="opponent-stats">${die(p.black, "black", i, "black")}${die(p.white, "white", i, "white")}</div></div></section>`;
 }
 function base() {
   if (
-    (onlineSeat === 0 || onlineSeat === 1) &&
-    state.setup >= 2 &&
+    Number.isInteger(onlineSeat) &&
+    state.setup >= state.players.length &&
     onlineSeat !== state.active
   )
     return `<span class="mode-note">等待對手完成回合…</span>`;
@@ -218,14 +226,14 @@ function bindActions() {
 function render() {
   let view = viewerSeat(),
     p = state.players[view],
-    o = state.players[1 - view],
+    opponents = state.players.map((p, i) => ({ p, i })).filter((x) => x.i !== view),
     top = state.deck.at(-1),
     last = state.discard.at(-1);
   $("#turnName").textContent =
-    state.setup < 2
+    state.setup < state.players.length
       ? `${state.players[state.active].name}：選擇起始角色`
       : state.players[state.active].name;
-  $("#opponent").innerHTML = opponentView(o);
+  $("#opponent").innerHTML = opponents.map((x) => opponentView(x.p, x.i)).join("");
   $("#activePlayer").innerHTML = activeView(p);
   $("#center").innerHTML =
     state.center.map((c, i) => card(c, "center", i)).join("") ||
@@ -251,7 +259,7 @@ function render() {
     .map((x) => `<li>${esc(x)}</li>`)
     .join("");
   selected = {};
-  $("#actions").innerHTML = state.setup < 2 ? "" : base();
+  $("#actions").innerHTML = state.setup < state.players.length ? "" : base();
   bindCards();
   bindActions();
   if (state.pendingDice) showDiceChoice();
@@ -498,17 +506,17 @@ function setup() {
       p.field.push(p.hand.splice([...picks][0], 1)[0]);
       log(`${p.name} 選擇起始角色。`);
       state.setup++;
-      if (state.setup === 1) {
-        state.active = 1;
+      if (state.setup < state.players.length) {
+        state.active = state.setup;
         render();
         if (onlineSeat === null) {
-          $("#passName").textContent = state.players[1].name;
+          $("#passName").textContent = state.players[state.active].name;
           $("#pass").classList.remove("hidden");
           setTimeout(setup);
         }
       } else {
         state.active = 0;
-        state.setup = 2;
+        state.setup = state.players.length;
         render();
         if (onlineSeat === null) {
           $("#passName").textContent = state.players[0].name;
@@ -737,7 +745,9 @@ function exhaustSpec(text) {
 }
 function chooseExhaustTargets(spec, title, confirm, cancel) {
   let effectOwner = spec.owner ?? state.active,
-    owners = spec.both ? [effectOwner, 1 - effectOwner] : [effectOwner],
+    owners = spec.both
+      ? [effectOwner, ...state.players.map((_, i) => i).filter((i) => i !== effectOwner)]
+      : [effectOwner],
     pool = [];
   owners.forEach((owner) =>
     state.players[owner].field.forEach((card, index) => {
@@ -897,8 +907,8 @@ function put(effect) {
     c.exhausted = true;
   log(`${p.name} 打出「${c.name}」${effect ? "並發動進場效果" : ""}。`);
   if (state.currentEvent?.participants.includes(c.id)) {
-    if (state.currentEvent.id === 5) p.white = Math.max(1, p.white - 1);
-    if (state.currentEvent.id === 7) p.black = Math.max(1, p.black - 1);
+    if (state.currentEvent.id === 5) setDie(state.active, "white", p.white - 1, `事件「${state.currentEvent.name}」`);
+    if (state.currentEvent.id === 7) setDie(state.active, "black", p.black - 1, `事件「${state.currentEvent.name}」`);
     if (state.currentEvent.id === 9 && p.hand.length)
       queueDiscards([{ player: state.active, count: 1, reason: "巫女暴走" }]);
   }
@@ -1431,7 +1441,7 @@ function showDiceChoice() {
           ? `由 ${state.players[q.owner].name} 選擇自己的黑骰或白骰`
           : `選擇你或敵方${op.targets === "black" ? "黑" : "白"}骰`,
     sideButtons = needsSide
-      ? `<div class="side-choice"><button data-side="${q.owner}" class="${q.side === q.owner ? "primary" : ""}">${diceSummary(q.owner, "我方")}</button><button data-side="${1 - q.owner}" class="${q.side === 1 - q.owner ? "primary" : ""}">${diceSummary(1 - q.owner, "對方")}</button></div>`
+      ? `<div class="side-choice">${state.players.map((_, i) => `<button data-side="${i}" class="${q.side === i ? "primary" : ""}">${diceSummary(i, i === q.owner ? "自己" : teamLabel(i))}</button>`).join("")}</div>`
       : "";
   let sourceText =
     q.sourceName === "與牌庫頂牌同系"
@@ -1471,9 +1481,6 @@ function confirmDie() {
     q.chosen.key,
     op.type === "delta" ? old + op.value : op.value,
     q.card,
-  );
-  log(
-    `${q.card}：${q.chosen.owner === q.owner ? "發動玩家" : "另一位玩家"}${q.chosen.key === "black" ? "黑" : "白"}骰 ${old} → ${p[q.chosen.key]}。`,
   );
   if (q.ops.length) {
     q.chosen = null;
@@ -1534,17 +1541,17 @@ function applyEventEnter(e) {
   state.players.forEach((p, i) => {
     let has = hasEventRole(p, e),
       x = p.field.filter((c) => e.participants.includes(c.id)).length;
-    if (e.id === 1 && !has) p.white = 2;
+    if (e.id === 1 && !has) setDie(i, "white", 2, `事件「${e.name}」進場`);
     if (e.id === 2 && x) draw(p, x);
-    if (e.id === 3 && has) p.black = Math.min(6, p.black + 1);
-    if (e.id === 4 && has) p.white = Math.min(6, p.white + 1);
-    if (e.id === 5 && has) p.black = Math.max(1, p.black - 1);
-    if (e.id === 6 && !has) p.black = Math.max(1, p.black - 1);
-    if (e.id === 7 && has) p.white = Math.min(6, p.white + 1);
-    if (e.id === 8 && !has) p.black = 2;
+    if (e.id === 3 && has) setDie(i, "black", p.black + 1, `事件「${e.name}」進場`);
+    if (e.id === 4 && has) setDie(i, "white", p.white + 1, `事件「${e.name}」進場`);
+    if (e.id === 5 && has) setDie(i, "black", p.black - 1, `事件「${e.name}」進場`);
+    if (e.id === 6 && !has) setDie(i, "black", p.black - 1, `事件「${e.name}」進場`);
+    if (e.id === 7 && has) setDie(i, "white", p.white + 1, `事件「${e.name}」進場`);
+    if (e.id === 8 && !has) setDie(i, "black", 2, `事件「${e.name}」進場`);
     if (e.id === 9 && has)
       discards.push({ player: i, count: 1, reason: e.name });
-    if (e.id === 10 && !has) p.black = Math.max(1, p.black - 1);
+    if (e.id === 10 && !has) setDie(i, "black", p.black - 1, `事件「${e.name}」進場`);
   });
   log(`「${e.name}」進場效果已結算。`);
   if (discards.length) queueDiscards(discards);
@@ -1557,10 +1564,10 @@ function applyEventLeave(e) {
     state.discard.push(...removed);
     let n = removed.length;
     if (!n) return;
-    if ([1, 4].includes(e.id)) p.white = Math.max(1, p.white - n);
-    if ([3, 5, 8].includes(e.id)) p.black = Math.max(1, p.black - n);
-    if (e.id === 7) p.white = Math.min(6, p.white + n);
-    if (e.id === 10) p.black = Math.min(6, p.black + n);
+    if ([1, 4].includes(e.id)) setDie(i, "white", p.white - n, `事件「${e.name}」離場`);
+    if ([3, 5, 8].includes(e.id)) setDie(i, "black", p.black - n, `事件「${e.name}」離場`);
+    if (e.id === 7) setDie(i, "white", p.white + n, `事件「${e.name}」離場`);
+    if (e.id === 10) setDie(i, "black", p.black + n, `事件「${e.name}」離場`);
     if (e.id === 2)
       discards.push({ player: i, count: n, reason: `${e.name}離場` });
     if (e.id === 6) {
@@ -1665,14 +1672,25 @@ function score() {
   if (!n || p.field.length < n)
     return warn("尚不能計分", "需要骰點 6 且有足夠角色。");
   for (let i = 0; i < n; i++) p.scores.push(p.field.shift());
-  if (both) p.black = p.white = 2;
-  else p.black === 6 ? (p.black = 1) : (p.white = 1);
+  if (both) {
+    setDie(state.active, "black", 2, "計分");
+    setDie(state.active, "white", 2, "計分");
+  } else if (p.black === 6) setDie(state.active, "black", 1, "計分");
+  else setDie(state.active, "white", 1, "計分");
   log(`${p.name} 完成 ${n} 次紀行。`);
   render();
-  if (p.scores.length >= 4) warn("紀行完成", `${p.name} 獲得勝利！`);
+  if (state.players.length === 2 && p.scores.length >= 4)
+    warn("紀行完成", `${p.name} 獲得勝利！`);
+  if (state.players.length === 4) {
+    let team = state.active % 2,
+      members = state.players.filter((_, i) => i % 2 === team),
+      total = members.reduce((sum, x) => sum + x.scores.length, 0);
+    if (total >= 5 && members.every((x) => x.scores.length > 0))
+      warn("紀行完成", `${team ? "藍方" : "紅方"}合計完成 ${total} 次紀行，獲得勝利！`);
+  }
 }
 function finish() {
-  state.active = 1 - state.active;
+  state.active = (state.active + 1) % state.players.length;
   state.round++;
   state.turnAction = null;
   state.turnDidSomething = false;
