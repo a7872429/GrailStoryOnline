@@ -24,6 +24,7 @@ let state,
 let onlineSeat = null;
 let effectContinuations = [];
 let extraContinuation = null;
+let dismissedGameOverKey = "";
 function queueEffectContinuation(next) {
   if (typeof next === "function") effectContinuations.push(next);
 }
@@ -47,9 +48,7 @@ function log(s) {
 }
 function handLimit(p) {
   if (p.field.some((c) => c.id === 51)) return 7;
-  return state.currentEvent?.id === 6 && hasEventRole(p, state.currentEvent)
-    ? 4
-    : 5;
+  return 5;
 }
 function effectBusy() {
   return !!(
@@ -100,7 +99,16 @@ function newGame() {
         exhausted: false,
       })),
     ),
-    events = shuffle(D.events.map((e) => ({ ...e })));
+    eventToggle = $("#useEvents"),
+    queryEvents = new URLSearchParams(location.search).get("events"),
+    eventsEnabled = state?.gameOver
+      ? state.eventsEnabled !== false
+      : queryEvents !== null
+        ? queryEvents !== "0"
+        : eventToggle
+          ? eventToggle.checked
+          : state?.eventsEnabled !== false,
+    events = eventsEnabled ? shuffle(D.events.map((e) => ({ ...e }))) : [];
   let playerCount = window.onlinePlayerCount === 4 ? 4 : 2,
     players = Array.from({ length: playerCount }, (_, i) =>
       player($("#name" + (i + 1))?.value || `玩家${i + 1}`),
@@ -122,7 +130,10 @@ function newGame() {
     turnAction: null,
     turnDidSomething: false,
     activationCount: 0,
+    eventsEnabled,
+    gameOver: null,
   };
+  dismissedGameOverKey = "";
   state.players.forEach((p) => (p.hand = deck.splice(-5)));
   state.center = deck.splice(-4);
   $("#start").classList.add("hidden");
@@ -159,6 +170,8 @@ function opponentView(p, i) {
   return `<section class="opponent-seat team-${i % 2 ? "blue" : "red"}"><div class="opponent-head"><div class="opponent-identity"><span>${teamLabel(i)}</span><h2>${esc(p.name)}</h2></div><strong>紀行 ${p.scores.length}/4</strong></div><div class="title"><span>自身區 ${p.field.length}/5</span><span>手牌 ${p.hand.length}</span></div><div class="card-row opponent-field">${p.field.map((c, n) => card(c, "opp", n)).join("") || '<span class="empty">尚無角色</span>'}</div><div class="opponent-hand-line"><div class="card-row opponent-hand">${p.hand.map((c) => card(c, "", 0, true)).join("")}</div><div class="opponent-stats">${die(p.black, "black", i, "black")}${die(p.white, "white", i, "white")}</div></div></section>`;
 }
 function base() {
+  if (state.gameOver)
+    return `<span class="mode-note">遊戲已結束：${esc(state.gameOver.message)}</span>`;
   if (
     Number.isInteger(onlineSeat) &&
     state.setup >= state.players.length &&
@@ -239,11 +252,13 @@ function render() {
     state.center.map((c, i) => card(c, "center", i)).join("") ||
     '<span class="empty">中央區為空</span>';
   $("#eventReady").innerHTML =
-    state.eventReady.map((e, i) => eventCard(e, "event", i)).join("") ||
-    '<span class="empty">購買後翻開事件</span>';
+    state.eventsEnabled === false
+      ? '<span class="empty">本局未啟用事件牌</span>'
+      : state.eventReady.map((e, i) => eventCard(e, "event", i)).join("") ||
+        '<span class="empty">購買後翻開事件</span>';
   $("#currentEvent").innerHTML = state.currentEvent
     ? eventCard(state.currentEvent, "current", 0)
-    : '<span class="empty">尚無事件</span>';
+    : `<span class="empty">${state.eventsEnabled === false ? "事件牌未啟用" : "尚無事件"}</span>`;
   $("#deckPile").innerHTML = top
     ? `${card(top, "deck", state.deck.length - 1, true)}<span class="pile-meta">牌庫頂：${top.faction}<b>${state.deck.length} 張</b></span>`
     : '<span class="empty">牌庫已空</span>';
@@ -252,7 +267,9 @@ function render() {
     : '<span class="pile-meta">棄牌區<b>0 張</b></span>';
   $("#deckCount").textContent = `剩餘 ${state.deck.length} 張`;
   $("#eventDeckCount").textContent =
-    `事件牌堆 ${state.events.length}｜已棄 ${state.eventDiscard.length}`;
+    state.eventsEnabled === false
+      ? "事件牌：停用"
+      : `事件牌堆 ${state.events.length}｜已棄 ${state.eventDiscard.length}`;
   $("#log").innerHTML = state.log
     .slice()
     .reverse()
@@ -272,6 +289,7 @@ function render() {
     state.effectContinuationOpening = true;
     setTimeout(continueEffectFlow);
   } else if (state.pendingExtra) showExtraChoice();
+  if (state.gameOver) setTimeout(showGameOver);
 }
 function clearSel() {
   $$(".selected").forEach((x) => x.classList.remove("selected"));
@@ -283,6 +301,7 @@ function bindCards() {
   $$("#game [data-zone]").forEach((el) => {
     bindPreview(el);
     el.onclick = () => {
+      if (state.gameOver) return showGameOver();
       if (el._previewDragged) {
         el._previewDragged = false;
         return;
@@ -532,13 +551,35 @@ function warn(t, s, continuation = null) {
   $("#modalText").textContent = s;
   $("#modal").classList.remove("hidden");
 }
-function choosePlayerTarget(title, text, done) {
-  let owner = state.active;
+function opponentPlayers(owner = state.active) {
+  return state.players
+    .map((_, i) => i)
+    .filter((i) =>
+      state.players.length === 4 ? i % 2 !== owner % 2 : i !== owner,
+    );
+}
+function targetPlayersFor(text, owner = state.active) {
+  let scope = String(text || "");
+  if (/你(?:或|與)(?:敵方|對手)|自身(?:區)?(?:或|與)(?:敵方|對手)/.test(scope))
+    return [owner, ...opponentPlayers(owner)];
+  return state.players.map((_, i) => i);
+}
+function targetZoneLabel(owner, effectOwner = state.active) {
+  if (owner === effectOwner) return "我方自身區";
+  if (state.players.length === 4 && owner % 2 === effectOwner % 2)
+    return `${teamLabel(owner)}（隊友）自身區`;
+  return `${teamLabel(owner)}自身區`;
+}
+function choosePlayerTarget(title, text, done, candidates = null) {
+  let owner = state.active,
+    allowed = candidates || state.players.map((_, i) => i);
   playerChoiceCallback = done;
   let buttons = state.players
+    .map((p, i) => ({ p, i }))
+    .filter(({ i }) => allowed.includes(i))
     .map(
-      (p, i) =>
-        `<button data-player-target="${i}" class="${i === owner ? "primary" : ""}">${i === owner ? "自己" : state.players.length === 2 ? "敵方" : `玩家${i + 1}`}：${esc(p.name)}（黑 ${p.black}／白 ${p.white}）</button>`,
+      ({ p, i }) =>
+        `<button data-player-target="${i}" class="${i === owner ? "primary" : ""}">${i === owner ? "自己" : state.players.length === 2 ? "敵方" : teamLabel(i)}：${esc(p.name)}（黑 ${p.black}／白 ${p.white}）</button>`,
     )
     .join("");
   let overlay = $("#playerChoice");
@@ -594,20 +635,22 @@ function chooseCardThenPlayer(c, after, sourceName = "技能效果") {
           render();
           after?.();
         },
+        targetPlayersFor("自身區或敵方自身區"),
       );
     },
   });
 }
-function chooseResetTarget(c, after, sourceName = "技能效果") {
-  let pool = [];
+function chooseResetTarget(c, after, sourceName = "技能效果", scopeText = "場上") {
+  let pool = [],
+    owners = targetPlayersFor(scopeText);
   state.players.forEach((p, owner) =>
     p.field.forEach((card, index) => {
-      if (card.exhausted)
+      if (owners.includes(owner) && card.exhausted)
         pool.push({
           card,
           owner,
           index,
-          zone: owner === state.active ? "我方自身區" : "敵方自身區",
+          zone: targetZoneLabel(owner),
         });
     }),
   );
@@ -739,14 +782,14 @@ function exhaustSpec(text) {
   }
   if (!m) return null;
   let clause = m[0],
-    both = /敵方/.test(clause),
+    both = /敵方|對手|場上|目標角色/.test(clause),
     optional = /最多/.test(clause);
   return { clause, count: n, both, optional };
 }
 function chooseExhaustTargets(spec, title, confirm, cancel) {
   let effectOwner = spec.owner ?? state.active,
     owners = spec.both
-      ? [effectOwner, ...state.players.map((_, i) => i).filter((i) => i !== effectOwner)]
+      ? targetPlayersFor(spec.clause, effectOwner)
       : [effectOwner],
     pool = [];
   owners.forEach((owner) =>
@@ -756,7 +799,7 @@ function chooseExhaustTargets(spec, title, confirm, cancel) {
           card,
           owner,
           index,
-          zone: owner === effectOwner ? "我方自身區" : "敵方自身區",
+          zone: targetZoneLabel(owner, effectOwner),
         });
     }),
   );
@@ -805,7 +848,6 @@ function recycleDiscardIntoDeck() {
 }
 function refill() {
   while (state.center.length < 4) {
-    if (state.currentEvent?.id === 4 && state.center.length === 3) break;
     if (!state.deck.length && !recycleDiscardIntoDeck()) break;
     state.center.push(state.deck.pop());
     recycleDiscardIntoDeck();
@@ -893,11 +935,6 @@ function chooseExtraPlay(sourceCard, after, sourceName, exhaustAfter = false) {
 function put(effect) {
   let p = state.players[state.active],
     c = p.hand[selected.index];
-  if (
-    state.currentEvent?.id === 10 &&
-    state.currentEvent.participants.includes(c.id)
-  )
-    return warn("受到「紅蓮叛亂」限制", "這張參與角色在事件持續期間不能打出。");
   c = p.hand.splice(selected.index, 1)[0];
   if (p.field.length >= 5) state.discard.push(p.field.shift());
   p.field.push(c);
@@ -906,12 +943,6 @@ function put(effect) {
   if (effect && c.entry.costs.join("").includes("橫置這張牌"))
     c.exhausted = true;
   log(`${p.name} 打出「${c.name}」${effect ? "並發動進場效果" : ""}。`);
-  if (state.currentEvent?.participants.includes(c.id)) {
-    if (state.currentEvent.id === 5) setDie(state.active, "white", p.white - 1, `事件「${state.currentEvent.name}」`);
-    if (state.currentEvent.id === 7) setDie(state.active, "black", p.black - 1, `事件「${state.currentEvent.name}」`);
-    if (state.currentEvent.id === 9 && p.hand.length)
-      queueDiscards([{ player: state.active, count: 1, reason: "巫女暴走" }]);
-  }
   let keywords = keywordEffects(c, p),
     top = state.deck.at(-1),
     topEffects = [];
@@ -937,9 +968,20 @@ function put(effect) {
                 : finishTop(),
             "進場效果",
           )
-        : finishTop();
-  if (keywords.length) runEffectSequence(keywords, c, finishEntry);
-  else finishEntry();
+        : finishTop(),
+    finishKeywords = () =>
+      keywords.length ? runEffectSequence(keywords, c, finishEntry) : finishEntry(),
+    finishEvent = () =>
+      state.eventsEnabled !== false &&
+      state.currentEvent?.participants.includes(c.id)
+        ? applyEventRoleEffect(
+            state.currentEvent,
+            state.active,
+            "在場效果",
+            finishKeywords,
+          )
+        : finishKeywords();
+  finishEvent();
   refill();
   render();
 }
@@ -1173,6 +1215,7 @@ function applyEffect(s, c, after, sourceName = c.name) {
       c,
       () => applyEffect(fixed.replace(reset[0], ""), c, after, sourceName),
       sourceName,
+      reset[0],
     );
   let playerDice = fixed.match(
     /你選擇你或敵方，?選擇的人黑骰(?:點數)?([+-]\d+)，?白骰(?:點數)?([+-]\d+)/,
@@ -1198,6 +1241,7 @@ function applyEffect(s, c, after, sourceName = c.name) {
         render();
         applyEffect(fixed.replace(playerDice[0], ""), c, after, sourceName);
       },
+      targetPlayersFor(playerDice[0], owner),
     );
   let discardPlayer = fixed.match(
     /(?:你)?選擇你或敵方(?:玩家)?，?棄(\d+)張手牌(?:到中央區)?/,
@@ -1238,12 +1282,13 @@ function applyEffect(s, c, after, sourceName = c.name) {
           },
         });
       },
+      targetPlayersFor(discardPlayer[0], owner),
     );
   let xs = exhaustSpec(fixed),
-    op = (v, t) =>
+    op = (v, t, owners = state.players.map((_, i) => i)) =>
       v.startsWith("+") || v.startsWith("-")
-        ? { type: "delta", value: +v, targets: t }
-        : { type: "set", value: +v.match(/\d+/)[0], targets: t };
+        ? { type: "delta", value: +v, targets: t, owners }
+        : { type: "set", value: +v.match(/\d+/)[0], targets: t, owners };
   if (xs) {
     xs.owner = owner;
     state.pendingExhaust = {
@@ -1257,14 +1302,14 @@ function applyEffect(s, c, after, sourceName = c.name) {
   );
   if (own) {
     let v = own[1] || own[2];
-    ops.push(op(v, "self"));
+    ops.push(op(v, "self", [owner]));
     fixed = fixed.replace(own[0], "");
   }
   let eitherSideColor = fixed.match(
     /你選擇你或敵方，?黑骰(?:點數)?([+-]\d+)或白骰(?:點數)?\1/,
   );
   if (eitherSideColor) {
-    ops.push(op(eitherSideColor[1], "all"));
+    ops.push(op(eitherSideColor[1], "all", targetPlayersFor(eitherSideColor[0], owner)));
     fixed = fixed.replace(eitherSideColor[0], "");
   }
   for (let m of [...fixed.matchAll(
@@ -1276,13 +1321,13 @@ function applyEffect(s, c, after, sourceName = c.name) {
   for (let m of [...fixed.matchAll(
     /你選擇你或敵方(?:任意)?[1一]個骰，?骰?點數?([+-]\d+|調整為\d+|變成\d+)/g,
   )]) {
-    ops.push(op(m[1], "all"));
+    ops.push(op(m[1], "all", targetPlayersFor(m[0], owner)));
     fixed = fixed.replace(m[0], "");
   }
   for (let m of [...fixed.matchAll(
     /你選擇你或敵方，?(黑|白)骰(?:點數)?([+-]\d+|調整為\d+|變成\d+)/g,
   )]) {
-    ops.push(op(m[2], m[1] === "黑" ? "black" : "white"));
+    ops.push(op(m[2], m[1] === "黑" ? "black" : "white", targetPlayersFor(m[0], owner)));
     fixed = fixed.replace(m[0], "");
   }
   let all = fixed.match(/所有大於(\d+)的骰(?:點數)?([+-])(\d+)/);
@@ -1342,6 +1387,7 @@ function applyEffect(s, c, after, sourceName = c.name) {
         render();
         after?.();
       },
+      targetPlayersFor(residual, owner),
     );
   else if (!xs && !state.pendingBarrier && !ops.length) {
     if (residual) applyEffect(residual, c, after, sourceName);
@@ -1424,6 +1470,7 @@ function showDiceChoice() {
   $$("[data-die-owner]").forEach((d) => {
     let owner = +d.dataset.dieOwner,
       allowed =
+        op.owners.includes(owner) &&
         (!needsSide || (q.side !== null && q.side !== undefined)) &&
         (!needsSide || owner === q.side) &&
         (op.targets === "all" ||
@@ -1441,7 +1488,7 @@ function showDiceChoice() {
           ? `由 ${state.players[q.owner].name} 選擇自己的黑骰或白骰`
           : `選擇你或敵方${op.targets === "black" ? "黑" : "白"}骰`,
     sideButtons = needsSide
-      ? `<div class="side-choice">${state.players.map((_, i) => `<button data-side="${i}" class="${q.side === i ? "primary" : ""}">${diceSummary(i, i === q.owner ? "自己" : teamLabel(i))}</button>`).join("")}</div>`
+      ? `<div class="side-choice">${state.players.map((_, i) => i).filter((i) => op.owners.includes(i)).map((i) => `<button data-side="${i}" class="${q.side === i ? "primary" : ""}">${diceSummary(i, i === q.owner ? "自己" : teamLabel(i))}</button>`).join("")}</div>`
       : "";
   let sourceText =
     q.sourceName === "與牌庫頂牌同系"
@@ -1536,54 +1583,74 @@ function nextEventDiscard() {
     },
   });
 }
-function applyEventEnter(e) {
-  let discards = [];
-  state.players.forEach((p, i) => {
-    let has = hasEventRole(p, e),
-      x = p.field.filter((c) => e.participants.includes(c.id)).length;
-    if (e.id === 1 && !has) setDie(i, "white", 2, `事件「${e.name}」進場`);
-    if (e.id === 2 && x) draw(p, x);
-    if (e.id === 3 && has) setDie(i, "black", p.black + 1, `事件「${e.name}」進場`);
-    if (e.id === 4 && has) setDie(i, "white", p.white + 1, `事件「${e.name}」進場`);
-    if (e.id === 5 && has) setDie(i, "black", p.black - 1, `事件「${e.name}」進場`);
-    if (e.id === 6 && !has) setDie(i, "black", p.black - 1, `事件「${e.name}」進場`);
-    if (e.id === 7 && has) setDie(i, "white", p.white + 1, `事件「${e.name}」進場`);
-    if (e.id === 8 && !has) setDie(i, "black", 2, `事件「${e.name}」進場`);
-    if (e.id === 9 && has)
-      discards.push({ player: i, count: 1, reason: e.name });
-    if (e.id === 10 && !has) setDie(i, "black", p.black - 1, `事件「${e.name}」進場`);
-  });
-  log(`「${e.name}」進場效果已結算。`);
-  if (discards.length) queueDiscards(discards);
+function applyEventRoleEffect(e, owner, phase, done = null) {
+  let p = state.players[owner],
+    source = `事件「${e.name}」${phase}`,
+    delta = (key, n) => setDie(owner, key, p[key] + n, source);
+  if (["劍意末路", "紅蓮叛亂"].includes(e.name)) delta("black", 1);
+  else if (["神子創臨", "女武神計畫"].includes(e.name)) delta("white", 1);
+  else if (e.name === "圓桌統合") delta("black", -1);
+  else if (e.name === "精靈解放") delta("white", -1);
+  else if (e.name === "黑衣聖教") {
+    draw(p, 1);
+    log(`${source}：${p.name}抽 1 張牌。`);
+  } else if (e.name === "巫女暴走") {
+    for (let key of ["black", "white"])
+      if (p[key] > 2) delta(key, -1);
+  } else if (e.name === "賢者之書") {
+    for (let key of ["black", "white"])
+      if (p[key] < 3) delta(key, 1);
+  } else if (e.name === "御神之亂") {
+    if (!p.hand.length) {
+      log(`${source}：${p.name}沒有手牌可棄。`);
+      render();
+      return done?.();
+    }
+    return openChoice({
+      title: source,
+      text: `${p.name}：選擇 1 張手牌棄到中央區。`,
+      cards: p.hand.map((card) => ({ card, zone: `${p.name}手牌` })),
+      required: 1,
+      cancel: false,
+      confirm: (picks) => {
+        let i = [...picks][0];
+        state.center.push(...p.hand.splice(i, 1));
+        log(`${source}：${p.name}棄 1 張手牌。`);
+        refill();
+        render();
+        done?.();
+      },
+    });
+  }
+  render();
+  done?.();
+}
+function applyEventEnter(e, done = null) {
+  let owners = state.players
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => hasEventRole(p, e))
+      .map(({ i }) => i),
+    next = () => {
+      let owner = owners.shift();
+      if (owner === undefined) {
+        log(`「${e.name}」進場效果已結算。`);
+        render();
+        return done?.();
+      }
+      applyEventRoleEffect(e, owner, "進場效果", next);
+    };
+  next();
 }
 function applyEventLeave(e) {
-  let discards = [];
-  state.players.forEach((p, i) => {
+  state.players.forEach((p) => {
     let removed = p.field.filter((c) => e.participants.includes(c.id));
     p.field = p.field.filter((c) => !e.participants.includes(c.id));
     state.discard.push(...removed);
-    let n = removed.length;
-    if (!n) return;
-    if ([1, 4].includes(e.id)) setDie(i, "white", p.white - n, `事件「${e.name}」離場`);
-    if ([3, 5, 8].includes(e.id)) setDie(i, "black", p.black - n, `事件「${e.name}」離場`);
-    if (e.id === 7) setDie(i, "white", p.white + n, `事件「${e.name}」離場`);
-    if (e.id === 10) setDie(i, "black", p.black + n, `事件「${e.name}」離場`);
-    if (e.id === 2)
-      discards.push({ player: i, count: n, reason: `${e.name}離場` });
-    if (e.id === 6) {
-      draw(p, n * 2);
-      discards.push({ player: i, count: n, reason: `${e.name}離場` });
-    }
-    if (e.id === 9) {
-      draw(p, n);
-      log(`「${e.name}」離場：${p.name} 尚可指定玩家棄 ${n} 張牌。`);
-    }
   });
   log(`「${e.name}」離場，對應角色已移除。`);
-  if (discards.length) queueDiscards(discards);
 }
 function revealEvent() {
-  if (!state.events.length) return;
+  if (state.eventsEnabled === false || !state.events.length) return;
   let e = state.events.pop();
   state.eventReady.push(e);
   log(`購買後翻開事件「${e.name}」（${state.eventReady.length}/4）。`);
@@ -1616,7 +1683,6 @@ function resolveEvent(index) {
     `${state.players[state.active].name} 選擇「${chosen.name}」進場，其他三張事件丟棄。`,
   );
   applyEventEnter(chosen);
-  render();
 }
 function applyBuy(ix) {
   let p = state.players[state.active],
@@ -1624,19 +1690,16 @@ function applyBuy(ix) {
   p.hand.push(...got.reverse());
   state.turnDidSomething = true;
   let n = 2 + p.scores.length,
-    d = 0,
-    holy = 0;
+    d = 0;
   for (let c of p.field)
     if (c.exhausted && d < n) {
       resetCard(c, state.active, "購買／重置");
       d++;
-      if (c.faction === "聖") holy++;
     }
-  if (state.currentEvent?.id === 1 && holy) draw(p, holy);
   log(`${p.name} 購買 ${got.length} 張牌並重置 ${d} 名角色。`);
   refill();
   render();
-  revealEvent();
+  if (state.eventsEnabled !== false) revealEvent();
 }
 function buy() {
   if (state.turnAction)
@@ -1647,10 +1710,7 @@ function buy() {
   let p = state.players[state.active];
   if (p.hand.length >= 5) return warn("無法購買", "手牌已達上限。");
   state.turnAction = "buy";
-  let required =
-    state.currentEvent?.id === 3
-      ? Math.min(3, state.center.length)
-      : Math.min(4, state.center.length);
+  let required = Math.min(4, state.center.length);
   if (state.center.length === required)
     return applyBuy(state.center.map((_, i) => i));
   openChoice({
@@ -1665,6 +1725,60 @@ function buy() {
     confirm: (p) => applyBuy([...p]),
   });
 }
+function victoryResult() {
+  if (state.players.length === 2) {
+    let winner = state.players.findIndex((p) => p.scores.length >= 4);
+    if (winner >= 0)
+      return {
+        key: `player-${winner}-${state.round}`,
+        message: `${state.players[winner].name} 完成四次紀行，獲得勝利！`,
+      };
+    return null;
+  }
+  for (let team = 0; team < 2; team++) {
+    let members = state.players.filter((_, i) => i % 2 === team),
+      total = members.reduce((sum, p) => sum + p.scores.length, 0);
+    if (members.length === 2 && total >= 5 && members.every((p) => p.scores.length >= 1))
+      return {
+        key: `team-${team}-${state.round}`,
+        message: `${team === 0 ? "紅方" : "藍方"}兩位玩家皆已完成紀行，合計 ${total} 分，獲得勝利！`,
+      };
+  }
+  return null;
+}
+function showGameOver() {
+  if (!state.gameOver || dismissedGameOverKey === state.gameOver.key) return;
+  let overlay = $("#gameOver");
+  if (!overlay) {
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<div id="gameOver" class="overlay hidden"><div class="panel game-over-panel"><p class="eyebrow">紀行完成</p><h2 id="gameOverTitle"></h2><div class="game-over-actions"><button id="gameRematch" class="primary">A. 重來一局</button><button id="gameHome">B. 回到主頁面</button><button id="gameStay" class="ghost">C. 停留在目前頁面</button></div></div></div>',
+    );
+    overlay = $("#gameOver");
+  }
+  $("#gameOverTitle").textContent = state.gameOver.message;
+  overlay.classList.remove("hidden");
+  $("#gameRematch").onclick = () => newGame();
+  $("#gameHome").onclick = () => (location.href = "../");
+  $("#gameStay").onclick = () => {
+    dismissedGameOverKey = state.gameOver.key;
+    overlay.classList.add("hidden");
+  };
+}
+function endGame(result) {
+  if (!result || state.gameOver) return;
+  state.gameOver = result;
+  state.pendingDice = null;
+  state.pendingExhaust = null;
+  state.pendingExtra = null;
+  state.pendingBarrier = null;
+  state.pendingSaintRemoval = null;
+  effectContinuations = [];
+  choice = null;
+  $("#choice").classList.add("hidden");
+  log(result.message);
+  render();
+}
 function score() {
   let p = state.players[state.active],
     both = p.black === 6 && p.white === 6,
@@ -1678,18 +1792,12 @@ function score() {
   } else if (p.black === 6) setDie(state.active, "black", 1, "計分");
   else setDie(state.active, "white", 1, "計分");
   log(`${p.name} 完成 ${n} 次紀行。`);
-  render();
-  if (state.players.length === 2 && p.scores.length >= 4)
-    warn("紀行完成", `${p.name} 獲得勝利！`);
-  if (state.players.length === 4) {
-    let team = state.active % 2,
-      members = state.players.filter((_, i) => i % 2 === team),
-      total = members.reduce((sum, x) => sum + x.scores.length, 0);
-    if (total >= 5 && members.every((x) => x.scores.length > 0))
-      warn("紀行完成", `${team ? "藍方" : "紅方"}合計完成 ${total} 次紀行，獲得勝利！`);
-  }
+  let result = victoryResult();
+  if (result) endGame(result);
+  else render();
 }
 function finish() {
+  if (state.gameOver) return showGameOver();
   state.active = (state.active + 1) % state.players.length;
   state.round++;
   state.turnAction = null;
