@@ -116,6 +116,7 @@ function newGame() {
     setup: 0,
     turnAction: null,
     turnDidSomething: false,
+    activationCount: 0,
   };
   state.players.forEach((p) => (p.hand = deck.splice(-5)));
   state.center = deck.splice(-4);
@@ -143,7 +144,7 @@ function die(n, color, owner, key) {
 }
 function activeView(p) {
   let i = viewerSeat();
-  return `<div class="player-head"><h2>${esc(p.name)}</h2><div class="player-dice">${die(p.black, "black", i, "black")}${die(p.white, "white", i, "white")}</div><div class="score-badge">紀行 ${p.scores.length}/4</div></div><div class="zones"><div><div class="title">自身區 ${p.field.length}/5</div><div class="card-row">${p.field.map((c, i) => card(c, "field", i)).join("") || '<span class="empty">尚無角色</span>'}</div></div><div><div class="title"><span>你的手牌 ${p.hand.length}/${handLimit(p)}</span><span>計分區 ${p.scores.length}</span></div><div class="card-row">${p.hand.map((c, i) => card(c, "hand", i)).join("")}${p.scores.map((c, i) => card(c, "score", i, false, true)).join("")}</div></div></div>`;
+  return `<div class="player-head"><h2>${esc(p.name)}</h2><div class="player-dice">${die(p.black, "black", i, "black")}${die(p.white, "white", i, "white")}</div><div class="score-badge">紀行 ${p.scores.length}/4</div></div><div class="zones"><div><div class="title">自身區 ${p.field.length}/5</div><div class="card-row">${p.field.map((c, i) => card(c, "field", i)).join("") || '<span class="empty">尚無角色</span>'}</div></div><div><div class="title">你的手牌 ${p.hand.length}/${handLimit(p)}</div><div class="card-row">${p.hand.map((c, i) => card(c, "hand", i)).join("") || '<span class="empty">手牌為空</span>'}</div></div><div class="score-zone"><div class="title">計分區 ${p.scores.length}/4</div><div class="card-row score-cards">${p.scores.map((c, i) => card(c, "score", i, false, true)).join("") || '<span class="empty">尚無計分牌</span>'}</div></div></div>`;
 }
 function opponentView(p) {
   let i = 1 - viewerSeat();
@@ -159,7 +160,7 @@ function base() {
   if (state.turnAction === "play")
     return `<span class="mode-note">打牌進場：請選擇一張手牌</span><button data-act="cancelMain" class="ghost">返回三選一</button><button data-act="score">⚡ 計分</button>`;
   if (state.turnAction === "activate")
-    return `<span class="mode-note">啟動階段：依序選擇直立角色</span><button data-act="finishActivate" class="primary">完成啟動</button><button data-act="score">⚡ 計分</button>`;
+    return `<span class="mode-note">啟動階段：依序選擇直立角色</span><button data-act="finishActivate" class="primary">完成啟動</button><button data-act="cancelMain" class="ghost">取消啟動，返回三選一</button><button data-act="score">⚡ 計分</button>`;
   if (state.turnAction)
     return `<span class="mode-note">本回合已完成「${state.turnAction === "playDone" ? "打牌進場" : state.turnAction === "buy" ? "購買／重置" : "啟動"}」</span><button data-act="score">⚡ 計分</button><button data-act="end" class="danger" ${state.turnDidSomething ? "" : "disabled"}>結束回合</button>`;
   return `<button data-act="choosePlay">打牌進場</button><button data-act="buy">購買＆重置</button><button data-act="chooseActivate">啟動</button><button data-act="score">⚡ 計分</button><button data-act="end" class="danger" disabled title="請先完成一項主要行動">結束回合</button>`;
@@ -305,17 +306,22 @@ function choosePlay() {
   $("#hint").textContent = "請選擇一張手牌。";
 }
 function cancelMain() {
+  if (state.turnAction === "activate" && state.activationCount > 0)
+    return warn("已經啟動角色", "至少一張角色已經完成啟動，不能取消整個啟動行動。");
+  selected = {};
   state.turnAction = null;
+  state.activationCount = 0;
   render();
 }
 function chooseActivate() {
   state.turnAction = "activate";
+  state.activationCount = 0;
   log(`${state.players[state.active].name} 進入啟動階段。`);
   render();
   $("#hint").textContent = "依序選擇要橫置並發動效果的直立角色。";
 }
 function finishActivate() {
-  if (!state.turnDidSomething)
+  if (!state.activationCount)
     return warn(
       "尚未啟動角色",
       "回合必須完成一項主要行動，請至少啟動一名直立角色。",
@@ -781,10 +787,18 @@ function showPendingExhaust() {
   state.exhaustChoiceOpening = false;
   if (job) chooseExhaustTargets(job.spec, job.title);
 }
+function recycleDiscardIntoDeck() {
+  if (state.deck.length || !state.discard.length) return false;
+  state.deck = shuffle(state.discard.splice(0));
+  log(`牌庫用盡，將棄牌區 ${state.deck.length} 張牌重新洗牌放回牌庫。`);
+  return true;
+}
 function refill() {
-  while (state.center.length < 4 && state.deck.length) {
+  while (state.center.length < 4) {
     if (state.currentEvent?.id === 4 && state.center.length === 3) break;
+    if (!state.deck.length && !recycleDiscardIntoDeck()) break;
     state.center.push(state.deck.pop());
+    recycleDiscardIntoDeck();
   }
 }
 function keywordEffects(c, p) {
@@ -855,6 +869,7 @@ function chooseExtraPlay(sourceCard, after, sourceName, exhaustAfter = false) {
         top = state.deck.at(-1);
       if (top && top.faction === card.faction) {
         state.discard.push(state.deck.pop());
+        recycleDiscardIntoDeck();
         effects.push({ name: "與牌庫頂牌同系", text: "你選擇自己黑骰或白骰點數+1" });
         log(`「${card.name}」與牌庫頂同為${card.faction}命格，牌庫頂移至棄牌區。`);
       }
@@ -892,6 +907,7 @@ function put(effect) {
     topEffects = [];
   if (top && top.faction === c.faction) {
     state.discard.push(state.deck.pop());
+    recycleDiscardIntoDeck();
     topEffects.push({
       name: "與牌庫頂牌同系",
       text: "你選擇自己黑骰或白骰點數+1",
@@ -1036,6 +1052,7 @@ function beginActivate() {
     () => {
       c.exhausted = true;
       state.turnDidSomething = true;
+      state.activationCount++;
       log(`${p.name} 啟動「${c.name}」。`);
       applyEffect(c.activate.effect, c, null, "啟動效果");
       refill();
@@ -1471,8 +1488,11 @@ function hasEventRole(p, e) {
   return p.field.some((c) => e.participants.includes(c.id));
 }
 function draw(p, n) {
-  for (let i = 0; i < n && state.deck.length; i++)
+  for (let i = 0; i < n; i++) {
+    if (!state.deck.length && !recycleDiscardIntoDeck()) break;
     p.hand.push(state.deck.pop());
+    recycleDiscardIntoDeck();
+  }
 }
 function queueDiscards(items) {
   state.eventDiscardQueue = [
@@ -1656,6 +1676,7 @@ function finish() {
   state.round++;
   state.turnAction = null;
   state.turnDidSomething = false;
+  state.activationCount = 0;
   render();
   if (onlineSeat === null) {
     $("#passName").textContent = state.players[state.active].name;
