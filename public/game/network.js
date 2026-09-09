@@ -89,6 +89,7 @@
       setTimeout(setup, 50);
   }
   async function initialize() {
+    if (seat !== 0) return;
     if (hostStarted) return;
     hostStarted = true;
     oldNew();
@@ -139,7 +140,7 @@
   document.addEventListener(
     "click",
     () => {
-      if (!state || onlineSeat !== state.active) return;
+      if (!state || (!state.gameOver && onlineSeat !== state.active)) return;
       dirty = true;
       mutationAuthorized = true;
       localMutation++;
