@@ -3,7 +3,7 @@
     room = q.get("room"),
     token = q.get("token"),
     seat = Number(q.get("seat"));
-  if (!room || !token || ![0, 1].includes(seat)) return;
+  if (!room || !token || ![0, 1, 2, 3].includes(seat)) return;
   onlineSeat = seat;
   let revision = -1,
     lastSent = "",
@@ -12,11 +12,12 @@
     hostStarted = false,
     dirty = false,
     sending = false,
-    localMutation = 0;
+    localMutation = 0,
+    mutationAuthorized = false;
   const originalRender = render;
   render = function () {
     originalRender();
-    if (state && onlineSeat !== state.active && state.setup >= 2) {
+    if (state && onlineSeat !== state.active && state.setup >= state.players.length) {
       $("#actions").innerHTML =
         '<span class="mode-note">等待對手完成回合…</span>';
       $("#hint").textContent = "對手行動中，牌桌會自動同步。";
@@ -37,7 +38,7 @@
     );
   async function send() {
     if (!state || applying || sending) return;
-    if (onlineSeat !== state.active) {
+    if (!mutationAuthorized) {
       dirty = false;
       return;
     }
@@ -62,7 +63,10 @@
       if (r.ok) {
         revision = (await r.json()).revision;
         lastSent = raw;
-        if (marker === localMutation) dirty = false;
+        if (marker === localMutation) {
+          dirty = false;
+          mutationAuthorized = false;
+        }
       }
     } catch {
       setTimeout(send, 1000);
@@ -81,7 +85,8 @@
     $("#choice").classList.add("hidden");
     render();
     applying = false;
-    if (state.setup < 2 && state.active === seat) setTimeout(setup, 50);
+    if (state.setup < state.players.length && state.active === seat)
+      setTimeout(setup, 50);
   }
   async function initialize() {
     if (hostStarted) return;
@@ -110,15 +115,17 @@
     if (polling || dirty || sending) return;
     polling = true;
     try {
-      const r = await fetch(`../api/rooms.php?code=${room}&token=${token}&revision=${revision}`, {
+      const r = await fetch(`../api/rooms.php?code=${room}&token=${token}`, {
         cache: "no-store",
       });
       if (!r.ok) return;
       const x = await r.json();
-      if (x.unchanged) return;
       if (x.names) {
-        $("#name1").value = x.names[0] || "玩家一";
-        $("#name2").value = x.names[1] || "玩家二";
+        window.onlinePlayerCount = x.maxPlayers || x.names.filter(Boolean).length || 2;
+        x.names.forEach((name, i) => {
+          let input = $("#name" + (i + 1));
+          if (input) input.value = name || `玩家${i + 1}`;
+        });
       }
       if (!x.state) {
         await initialize();
@@ -132,7 +139,9 @@
   document.addEventListener(
     "click",
     () => {
+      if (!state || onlineSeat !== state.active) return;
       dirty = true;
+      mutationAuthorized = true;
       localMutation++;
       setTimeout(send, 120);
     },
@@ -144,9 +153,9 @@
     oldNew();
     setTimeout(send, 400);
   };
-  if (seat === 1) {
+  if (seat !== 0) {
     $("#start").innerHTML =
-      '<input id="name1" type="hidden"><input id="name2" type="hidden"><div class="panel"><h2>正在同步牌局</h2><p>完成後會自動進入你的起始選牌。</p></div>';
+      '<input id="name1" type="hidden"><input id="name2" type="hidden"><input id="name3" type="hidden"><input id="name4" type="hidden"><div class="panel"><h2>正在同步牌局</h2><p>完成後會自動進入你的起始選牌。</p></div>';
   }
   pull();
   setInterval(pull, 1400);
