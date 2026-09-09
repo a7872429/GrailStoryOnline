@@ -185,10 +185,10 @@ function actions() {
             `<button data-act="entry" data-cost="${i}" class="primary skill-action">進場條件 ${String.fromCharCode(65 + i)}：${esc(x)}</button>`,
         )
         .join("");
-    return `<button data-act="play" class="primary">打牌進場（不發動）</button>${entryButtons}<button data-act="score">⚡ 計分</button><button data-act="cancel" class="ghost">取消</button>`;
+    return `<button data-act="play" class="primary">打牌進場（不發動）</button>${entryButtons}<button data-act="score">⚡ 計分</button><button data-act="cancelMain" class="ghost">取消打牌，返回三選一</button>`;
   }
   if (selected.zone === "field" && c)
-    return `<button data-act="activate" class="primary skill-action">啟動：${esc(c.activate.cost || "依卡牌條件")}</button><button data-act="score">⚡ 計分</button><button data-act="cancel" class="ghost">取消</button>`;
+    return `<button data-act="activate" class="primary skill-action">啟動：${esc(c.activate.cost || "依卡牌條件")}</button><button data-act="score">⚡ 計分</button><button data-act="cancelMain" class="ghost">取消啟動，返回三選一</button>`;
   return base();
 }
 function bindActions() {
