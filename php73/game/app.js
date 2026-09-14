@@ -109,7 +109,8 @@ function newGame() {
           ? eventToggle.checked
           : state?.eventsEnabled !== false,
     events = eventsEnabled ? shuffle(D.events.map((e) => ({ ...e }))) : [];
-  let playerCount = window.onlinePlayerCount === 4 ? 4 : 2,
+  let localPlayers = Number(new URLSearchParams(location.search).get("players")),
+    playerCount = window.onlinePlayerCount === 4 || localPlayers === 4 ? 4 : 2,
     players = Array.from({ length: playerCount }, (_, i) =>
       player($("#name" + (i + 1))?.value || `玩家${i + 1}`),
     );
@@ -140,6 +141,20 @@ function newGame() {
   $("#game").classList.remove("hidden");
   render();
   setup();
+}
+function configureLocalMode() {
+  let q = new URLSearchParams(location.search),
+    isOnline = q.has("room"),
+    four = !isOnline && Number(q.get("players")) === 4;
+  if (isOnline) return;
+  $$(".local-four-only").forEach((el) => el.classList.toggle("hidden", !four));
+  $("#localModeTitle").textContent = four ? "四人同機 · 隊伍對戰" : "雙人同機 · 對戰版";
+  $("#localModeRule").textContent = four
+    ? "紅方與藍方各兩人；兩位隊員都至少一分且合計五分即可獲勝。"
+    : "運用角色與命運，率先完成四次紀行。";
+  $("#localModeHelp").textContent = four
+    ? "順序為紅1 → 藍1 → 紅2 → 藍2；每次換人都會先遮住牌桌。"
+    : "雙方各自選擇一張起始角色；換人時會遮住牌桌，請交給指定玩家後再揭示。";
 }
 function card(c, z, i, back = false, scored = false) {
   if (back)
@@ -1846,6 +1861,7 @@ function end() {
     },
   });
 }
+configureLocalMode();
 $("#choiceConfirm").onclick = () => {
   let c = choice,
     p = c.picks;
